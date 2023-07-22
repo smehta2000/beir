@@ -2,15 +2,32 @@ from collections import defaultdict
 from typing import Dict, Tuple
 import os
 import logging
-from datasets import load_dataset, Value, Features
+from datasets import load_dataset, Value, Features, concatenate_datasets
+from functools import partial
+
 
 logger = logging.getLogger(__name__)
 
 
 class HFDataLoader:
     
-    def __init__(self, hf_repo: str = None, hf_repo_qrels: str = None, data_folder: str = None, prefix: str = None, corpus_file: str = "corpus.jsonl", query_file: str = "queries.jsonl", 
-                 qrels_folder: str = "qrels", qrels_file: str = "", streaming: bool = False, keep_in_memory: bool = False):
+    def __init__(
+        self, 
+        hf_repo: str = None, 
+        hf_repo_qrels: str = None, 
+        data_folder: str = None, 
+        prefix: str = None, 
+        corpus_file: str = "corpus.jsonl", 
+        query_file: str = "queries.jsonl", 
+        qrels_folder: str = "qrels", 
+        qrels_file: str = "", 
+        streaming: bool = False, 
+        keep_in_memory: bool = False,
+        sample: int = 100,  # sample % of the corpus and filter qrels, queries accordingly
+        include_qrel_corpus_docs: bool = True # if sampling, ensure that the corpus doc ids from qrels
+        # are included in the final sampled dataset. len(qrels) << len(corpus). So ok to include
+        # all corpus docs from qrels in the final sampled dataset.
+    ):
         self.corpus = {}
         self.queries = {}
         self.qrels = {}
@@ -33,6 +50,8 @@ class HFDataLoader:
             self.qrels_file = qrels_file
         self.streaming = streaming
         self.keep_in_memory = keep_in_memory
+        self.sample = sample
+        self.include_qrel_corpus_docs = include_qrel_corpus_docs
     
     @staticmethod
     def check(fIn: str, ext: str):
@@ -69,6 +88,11 @@ class HFDataLoader:
         self.qrels.map(qrels_dict_init)
         self.qrels = qrels_dict
         self.queries = self.queries.filter(lambda x: x['id'] in self.qrels)
+
+        # sample
+        if self.sample < 100:
+            self.corpus = self._sample_corpus()
+
         logger.info("Loaded %d %s Queries.", len(self.queries), split.upper())
         logger.info("Query Example: %s", self.queries[0])
         
@@ -85,6 +109,30 @@ class HFDataLoader:
             logger.info("Doc Example: %s", self.corpus[0])
 
         return self.corpus
+    
+    def _sample_corpus(self):
+        # ensure that corpus ids from the qrels are included.
+        include_corpus_ids = []
+        if self.include_qrel_corpus_docs:
+            for query_id, corpus_id_score in self.qrels.items():
+                include_corpus_ids.extend(list(corpus_id_score.keys()))
+        # filter by corpus_ids
+        filtered_dataset = self.corpus.filter(lambda example: example['id'] in include_corpus_ids)
+
+        # sampled corpus
+        sampled_dataset = self.corpus.shuffle(seed=42).select(range(int(len(self.corpus)* self.sample/100.0)))
+
+        # Concatenate the two datasets, removing any duplicates based on the 'id' field
+        merged_dataset = concatenate_datasets([filtered_dataset, sampled_dataset])
+        memory = set()
+        def is_unique(elem:any , column: str, memory: set) -> bool:
+            if elem[column] in memory:
+                return False
+            else:
+                memory.add(elem[column])
+                return True
+        deduped_dataset = merged_dataset.filter(partial(is_unique, column="id", memory=memory))
+        return deduped_dataset
     
     def _load_corpus(self):
         if self.hf_repo:
