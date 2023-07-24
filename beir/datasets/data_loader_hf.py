@@ -120,7 +120,8 @@ class HFDataLoader:
         filtered_dataset = self.corpus.filter(lambda example: example['id'] in include_corpus_ids)
 
         # sampled corpus
-        sampled_dataset = self.corpus.shuffle(seed=42).select(range(int(len(self.corpus)* self.sample/100.0)))
+        # If sampling is needed later: self.corpus.shuffle(seed=42)
+        sampled_dataset = self.corpus.select(range(int(len(self.corpus)* self.sample/100.0)))
 
         # Concatenate the two datasets, removing any duplicates based on the 'id' field
         merged_dataset = concatenate_datasets([filtered_dataset, sampled_dataset])
